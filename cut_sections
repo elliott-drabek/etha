@@ -1,0 +1,45 @@
+#! /usr/local/packages/Python-2.6.4/bin/python
+
+from sys import *
+from drabek import print_tabbed, read_fasta, write_fasta_entry, get_reverse_complement
+from collections import defaultdict
+from optparse import OptionParser
+
+###############################################################################
+
+parser = OptionParser()
+parser.add_option('-b', '--buffer', help='add a buffer of up to BUFFER_LENGTH bp on either side of section', metavar='BUFFER_LENGTH', type='int', default=0)
+
+(options, args) = parser.parse_args()
+
+assembly_file, = map(open, args)
+assembly_id_seq = dict(read_fasta(assembly_file))
+assembly_file.close()
+
+###############################################################################
+
+out_num = 1
+for line in stdin:
+  contig, start, end = line[:-1].split('\t')
+
+  seq = assembly_id_seq[contig]
+  start = int(start)
+  end = int(end)
+
+  #assert 1 <= start < end <= len(seq), (contig, start, end, len(seq))
+  reverse = start > end
+  if reverse:
+    start, end = end, start
+
+  start = max(1, start - options.buffer)
+  end = min(len(seq), end + options.buffer)
+
+  out_seq = seq[start - 1:end]
+  if reverse:
+    out_seq = get_reverse_complement(out_seq)
+
+  out_id = 'scn%s %s %s-%s' % (out_num, contig, start, end)
+
+  write_fasta_entry(out_id, out_seq)
+
+  out_num += 1

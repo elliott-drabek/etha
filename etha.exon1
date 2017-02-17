@@ -1,0 +1,172 @@
+#! /bin/bash
+
+# Find and evaluate var-gene exon 1 sequences in a PacBio reads or contigs
+
+# Dependencies (in PATH):
+# * mummer
+# * jellyfish version 1.1 or later
+# * glimmer3 (actuallly just multi-extract)
+
+# Installation: set the environment variable $etha to the absolute path of the directory this script is in.
+
+# Running: Set up input directory (see below) and execute 'etha /path/to/input/directory'
+
+# Input: I lied. I'm not sure yet
+
+# Output: We'll see
+
+###############################################################################
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o xtrace
+
+export LC_ALL=C
+export PATH=$etha:$PATH
+
+###############################################################################
+
+temp_d=`mktemp -d`
+
+function rm_temp_d {
+  rm -rf $temp_d
+}
+
+trap rm_temp_d 0
+
+###############################################################################
+
+cd $1
+shift
+
+# This directory should contain a subdirectory 'input' with the following files:
+# * target_exon.fa: multi-fasta of all reference target exons
+# * illumina_reads/*.fastq.gz: Illumina reads (in subdirectory illumina_reads)
+# * seq1.fa: Sequence to use to jumpstart kmer subgraph construction
+# * correctable.fa: Sequence to correct
+
+###############################################################################
+# not yet
+
+# * options: a shell script which will be sourced to set certain environment variables
+
+#source input/options
+
+#echo 1>&2 target=$target # which exon to target, either 1 or 2
+
+# this should be an option but right now it's set at 71.  To make it an option it needs to be changed in this script
+# and at least one other (exon1-end-mer.awk)
+#echo 1>&2 mer_length=$mer_length # length of kmers to use for correction
+
+###############################################################################
+# identify target exon kmer subgraph in Illumina reads
+
+# Count kmers in Illumina data.  This uses 71-mers, ignores kmers occurring < 3 times, uses 1 parallel threads, and
+# specifies 50 million hash entries
+if [[ ! -e 71.mer_counts ]]; then
+  echo !>&2 'no!'
+  exit 99
+  jellyfish count -m 71 -L 3 -s 50000000 -t 1 -o 71.mer_counts -C <(zcat input/illumina_reads/*.fastq.gz)
+fi
+
+# Nucmer reference target exon sequences against contigs and degenerates
+nucmer --maxmatch -p nuc-tarex-v-cdge200 input/target_exon.fa input/seq1.fa
+delta-filter -q nuc-tarex-v-cdge200.delta > nuc-tarex-v-cdge200.delta.q
+
+# Find potential end points of target exon matches
+show-coords -cHlT nuc-tarex-v-cdge200.delta.q \
+  | gawk '{hang=$8-$2;if($3<$4){a=$4+hang;d="f"}else{a=$4-hang;d="r"}printf"%s %7d  %s %7d %5d\n",$13,a,d,$9,hang}' \
+  | sort -k1,1b -k3,3b -k2nb \
+  | exon-ends.awk \
+  > tarex.ends
+
+# Get 100bp sequence at ends of target exon matches.  Go 3bp past end position
+gawk '{if($3=="f"){b=$2+3;a=b-99}else{b=$2-3;a=b+99}if($5<=100)printf"tarexend%02d  %s %7d %7d\n",++c,$1,a,b}' tarex.ends \
+  | multi-extract -w input/seq1.fa - \
+  > tarex.ends.fa
+
+# Get 71mers at target exon ends to start backward walks.  Take last AAGGT and preceding 66bp
+exon1-end-mer.awk tarex.ends.fa \
+  | gawk '{if(seen[$2]==0){print;seen[$2]=1}}' \
+  > tarex.walk-left.starts
+
+# Walk left from target exon ends to find target exon starts.
+# jellyfish arguments: -c: column format; -L 10: don't report counts under 10
+jellyfish dump -c -L 10 71.mer_counts \
+  | multi-walk -n 12000 tarex.walk-left.starts - \
+  > tarex.walk-left.out
+
+# From left walks get 71mers that are likely starts of target exons
+gawk '/^>/{s=($2=="Orf-end")}{if(NF==0)s=0;if(s)print}' tarex.walk-left.out > tarex.walk-left.fa
+exon1-start-mer.awk tarex.walk-left.fa > tarex.walk-right.starts
+
+# Make stop sequences for walk right so the walks don't go past the known target exon
+# splice sites
+gawk '{print $2}' tarex.walk-left.starts \
+  | sort -u \
+  > tarex.walk-right.stops
+
+# Walk back right from target exon starts
+jellyfish dump -c -L 10 71.mer_counts \
+  | multi-walk -n 12000 -s tarex.walk-right.stops tarex.walk-right.starts - \
+  > tarex.walk-right.out
+
+# Get new 71mers at ends of right walks that are likely splice sites
+# This should be improved to do something more accurate than just find the last AAGGT pattern
+gawk '/^>/{s=($2=="Orf-end")}{if(NF==0)s=0;if(s)print}' tarex.walk-right.out \
+  > tarex.walk-right.fa
+exon1-end-mer.awk tarex.walk-right.fa \
+  | gawk '{if(seen[$2]==0){print;seen[$2]=1}}' \
+  > tarex.new.walk-left.starts
+
+# Combine the original and new walk-left start 71mers
+cat tarex.walk-left.starts tarex.new.walk-left.starts > tarex.walk-left-2.starts
+
+# Make stop sequences for final walk-left
+gawk '{print $2}' tarex.walk-right.starts \
+  | sort -u \
+  > tarex.walk-left.stops
+
+# Do the final walk left and save all 71mers used
+jellyfish dump -c -L 10 71.mer_counts \
+  | multi-walk -n 12000 -s tarex.walk-left.stops -u target_exon.71mers tarex.walk-left-2.starts - \
+  > tarex.walk-left-2.out
+
+###############################################################################
+# use target exon kmer subgraph to correct PacBio reads
+
+# NUCmer reference target exon sequences against long PacBio reads
+nucmer --maxmatch -p nuc-tarex-v-correctable input/target_exon.fa input/correctable.fa
+delta-filter -q nuc-tarex-v-correctable.delta > nuc-tarex-v-correctable.delta.q
+
+# Find potential end points of target exon matches
+show-coords -cHlT nuc-tarex-v-correctable.delta.q \
+  | gawk '{hang=$8-$2;if($3<$4){a=$4+hang;d="f"}else{a=$4-hang;d="r"}printf"%s %7d  %s %7d %5d\n",$13,a,d,$9,hang}' \
+  | sort -k1,1b -k3,3b -k2nb \
+  | exon-ends.awk \
+  > pb.tarex.ends
+
+# Get entire PB read up to (and 3bp past) target exon end, i.e., the part of the PB
+# read containing target exon at the end.
+gawk '{if($3=="f"){b=$2+3;if($4<b)b=$4;a=1}else{b=$2-3;if(b<1)b=1;a=$4}if($5<=100)printf"tarex%04d  %s %7d %7d\n",++c,$1,a,b}' pb.tarex.ends \
+  | multi-extract -w input/correctable.fa - \
+  | extract-long-seqs 71 \
+  > pb.tarex.raw.fa
+
+# Use target exon 71mers to repair unconfirmed regions in pb.tarex.raw.fa where possible
+kmer-repair -V 1 pb.tarex.raw.fa target_exon.71mers \
+  | gawk '/^>/{s=1}{if(NF==0)s=0;if(s)print}' \
+  > pb.tarex.repair.fa
+
+# Get likely target exon portion of repaired sequence.  From last AAGGT got back until end of reading frame
+# (or run off the front of the sequence).  If hit end of reading frame, choose the first
+# in frame AGT
+get-exon1.awk pb.tarex.repair.fa > pb-tarex.end.all.fa
+
+# Get subset of these sequences that have all kmers confirmed as target exon kmers
+multi-trace pb-tarex.end.all.fa target_exon.71mers \
+  | gawk '/^>/{t=substr($1,2);c=z=0;next}{if(NF==0&&t!="")printf"%s %4d %4d\n",t,z,c;else if($1==++c){if($3==0)z++}}END{print t,z,c}' \
+  | gawk '{if($2==0)print $1}' \
+  | extract-fasta-bytag.awk - pb-tarex.end.all.fa \
+  > pb-tarex.end.cnf.fa

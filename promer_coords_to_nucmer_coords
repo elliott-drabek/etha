@@ -1,0 +1,11 @@
+#! /usr/local/packages/Python-2.6.4/bin/python
+
+from sys import *
+from drabek import print_tabbed
+from collections import defaultdict
+
+###############################################################################
+
+for line in stdin:
+  ref_start, ref_end, qry_start, qry_end, len_ref_match, len_qry_match, pct_idy, pct_sim, pct_stp, len_ref, len_qry, cov_r, cov_q, ref_frame, qry_frame, ref, qry = line[:-1].split('\t')
+  print_tabbed(ref_start, ref_end, qry_start, qry_end, len_ref_match, len_qry_match, pct_idy, len_ref, len_qry, cov_r, cov_q, ref, qry)

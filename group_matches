@@ -1,0 +1,58 @@
+#! /usr/local/packages/Python-2.6.4/bin/python
+
+from sys import *
+from drabek import print_tabbed
+from collections import defaultdict
+
+###############################################################################
+
+min_identity = 0.5
+min_alignment_length = 100
+max_distance = 100
+min_group_length = 2000
+
+###############################################################################
+
+qry_matches = defaultdict(lambda: [])
+for line in stdin:
+  ref_start, ref_end, qry_start, qry_end, len_ref_match, len_qry_match, pct_idy, len_ref, len_qry, cov_r, cov_q, ref, qry = line[:-1].split('\t')
+
+  ref_start = int(ref_start)
+  ref_end = int(ref_end)
+  qry_start = int(qry_start)
+  qry_end = int(qry_end)
+  len_ref_match = int(len_ref_match)
+  len_qry_match = int(len_qry_match)
+  identity = float(pct_idy) / 100.0
+  len_ref = int(len_ref)
+  len_qry = int(len_qry)
+  cov_r = float(cov_r)
+  cov_q = float(cov_q)
+
+  if identity >= min_identity and len_ref_match >= min_alignment_length:
+    if qry_start > qry_end:
+      qry_start, qry_end = qry_end, qry_start
+    qry_matches[qry].append((qry_start, qry_end, line[:-1]))
+
+for qry, matches in qry_matches.iteritems():
+  matches.sort()
+
+  groups = []
+  group_start = group_end = lines = None
+  for (qry_start, qry_end, line) in matches:
+    if group_end is not None and qry_start <= group_end + max_distance:
+      group_end = max(group_end, qry_end)
+      lines.append(line)
+    else:
+      if lines:
+        groups.append((group_start, group_end, lines))
+      group_start = qry_start
+      group_end = qry_end
+      lines = [line]
+  if lines:
+    groups.append((group_start, group_end, lines))
+
+  for group_number, (group_start, group_end, lines) in enumerate(groups):
+    group_length = group_end - group_start + 1
+    if group_length >= min_group_length:
+      print_tabbed(qry, group_start, group_end)

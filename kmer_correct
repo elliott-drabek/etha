@@ -1,0 +1,161 @@
+#! /usr/local/packages/Python-2.6.4/bin/python
+
+from sys import *
+from drabek import print_tabbed, read_fasta, write_fasta_entry
+from collections import defaultdict
+from heapq import *
+
+###############################################################################
+
+start_mer_file, all_mer_file, end_mer_file, correctable_file = map(open, argv[1:])
+
+###############################################################################
+
+base_complement = {
+    'a': 't',
+    't': 'a',
+    'g': 'c',
+    'c': 'g',
+    'n': 'n'
+  }
+
+def get_reverse_complement(seq):
+  return ''.join(base_complement[base] for base in reversed(seq))
+
+###############################################################################
+
+start_mers = set(line.strip().lower() for line in start_mer_file)
+start_mer_file.close()
+start_mers.update([get_reverse_complement(kmer) for kmer in start_mers])
+
+all_mers = set(line.strip().lower() for line in all_mer_file)
+all_mer_file.close()
+all_mers.update([get_reverse_complement(kmer) for kmer in all_mers])
+
+# k is the length of the attested kmers
+# j is k - 1, the length of the prefix that predicts the next possible letter
+k, = set(len(all_mer) for all_mer in all_mers)
+print >> stderr, 'k = %s' % `k`
+j = k - 1
+
+for start_mer in start_mers:
+  assert len(start_mer) == k # but we're going to ignore the last letter
+  for length in range(1, k):
+    all_mers.add('^' * (k - length) + start_mer[:length])
+
+end_mers = set(line.strip().lower() for line in end_mer_file)
+end_mer_file.close()
+end_mers.update([get_reverse_complement(kmer) for kmer in end_mers])
+
+real_end_mers = set(end_mer[1:] for end_mer in end_mers)
+end_mer_k, = set(len(end_mer) for end_mer in end_mers)
+assert k == end_mer_k, (k, end_mer_k)
+
+###############################################################################
+
+jmer_successor = defaultdict(lambda: set())
+for all_mer in all_mers:
+  jmer = all_mer[:-1]
+  successor = all_mer[1:]
+  jmer_successor[jmer].add(successor)
+
+###############################################################################
+
+deletion_cost = insertion_cost = substitution_cost = 1
+
+# state is a tuple: cost, jmer, position, pair_chain
+# pair_chain is a tuple: pair, predecessor
+
+def is_final(state, real_end_mers, correctable):
+  cost, jmer, position, pair_chain = state
+  return position == len(correctable) and jmer in real_end_mers
+
+def get_successor_states(state, jmer_successor, correctable):
+  cost, jmer, position, pair_chain = state
+
+  if position < len(correctable):
+    yield (cost + deletion_cost, jmer, position + 1, (intern(correctable[position] + '-'), pair_chain))
+
+  for next_jmer in jmer_successor[jmer]:
+    yield (cost + insertion_cost, next_jmer, position, (intern('-' + next_jmer[-1]), pair_chain))
+
+    if position < len(correctable):
+      pair = intern(correctable[position] + next_jmer[-1])
+      if next_jmer[-1] == correctable[position]:
+        yield (cost, next_jmer, position + 1, (pair, pair_chain))
+      else:
+        yield (cost + substitution_cost, next_jmer, position + 1, (pair.upper(), pair_chain))
+
+def decode_pair_chain(pair_chain):
+  pairs = []
+  corrected = []
+  while True:
+    pair, predecessor = pair_chain
+    if pair is None:
+      break
+    pairs.append(pair)
+    pair_chain = predecessor
+  pairs.reverse()
+  return pairs
+
+for id, correctable in read_fasta(correctable_file):
+  correctable = correctable.lower()
+  print >> stderr, 'id = %s' % `id`
+  print >> stderr, 'len(correctable) = %s' % `len(correctable)`
+
+  max_cost = int(len(correctable) * 0.1)
+  start_state = (0, '^' * j, 0, (None, None))
+  heap = [start_state]
+
+  cache = {}
+
+  i = 0
+  cache_tests = cache_fails = 0
+  max_position = 0
+  try:
+    while not is_final(heap[0], real_end_mers, correctable) and heap[0][0] <= max_cost:
+      state = heappop(heap)
+
+      i += 1
+      if i == 100000:
+        i = 0
+        print >> stderr, 'len(heap) = %s' % `len(heap)`
+        cost, jmer, position, pair_chain = state
+        print >> stderr, 'cost, jmer, position = %s' % `cost, jmer, position`
+        print >> stderr, 'max_position = %s' % `max_position`
+        print >> stderr, 'cache_fails = %s' % `cache_fails`
+        print >> stderr, 'cache_tests = %s' % `cache_tests`
+        print >> stderr, 'cache_fails / float(cache_tests) = %s' % `cache_fails / float(cache_tests)`
+
+      for successor_state in get_successor_states(state, jmer_successor, correctable):
+        cost, jmer, position, pair_chain = successor_state
+
+        if position > max_position:
+          max_position = position
+          pairs = decode_pair_chain(pair_chain)
+          #print >> stderr, ''.join(pair[0] for pair in pairs)
+          #print >> stderr, ''.join(pair[1] for pair in pairs)
+
+        key = (jmer, position)
+        cache_tests += 1
+        if key not in cache or cache[key] > cost:
+          cache_fails += 1
+          cache[key] = cost
+          heappush(heap, successor_state)
+
+    if is_final(heap[0], real_end_mers, correctable):
+      cost, jmer, position, pair_chain = heap[0]
+      pair, predecessor = pair_chain
+      pairs = decode_pair_chain(pair_chain)
+      #print >> stderr, '\n'.join(':' + pair for pair in pairs)
+      print >> stderr, 'Cost of %s: %s' % (id, cost)
+      print >> stderr, ''.join(('.' if pair[0] == pair[1] else '(%s%s)' % (pair[0], pair[1])) for pair in pairs)
+      print >> stderr
+      write_fasta_entry(id, ''.join(pair[1] for pair in pairs).replace('-', ''))
+    else:
+      print >> stderr, 'Exceeded max cost (%s), skipping %s' % (max_cost, id)
+
+  except MemoryError:
+    cache = None
+    heap = None
+    print >> stderr, 'Ran out of memory, skipping %s' % (max_cost, id)

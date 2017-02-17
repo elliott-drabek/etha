@@ -1,0 +1,38 @@
+#! /usr/local/packages/Python-2.6.4/bin/python
+
+from sys import *
+import re
+
+###############################################################################
+
+min_length, = map(int, argv[1:])
+
+###############################################################################
+
+def read_fasta(file=stdin):
+  id_line_pat = re.compile('^>\\s*(\\S+).*')
+  id = None
+  sequence_parts = []
+  for line in file:
+    match = id_line_pat.match(line)
+    if match:
+      if id is not None or sequence_parts:
+        yield id, ''.join(sequence_parts)
+      id, = match.groups()
+      sequence_parts = []
+    else:
+      sequence_parts.append(line.strip())
+  yield id, ''.join(sequence_parts)
+
+def write_fasta_entry(label, sequence, file=stdout, max_line_length=80):
+  print >> file, '>' + label
+  position = 0
+  while position < len(sequence):
+    print >> file, sequence[position:position + max_line_length]
+    position += max_line_length
+
+###############################################################################
+
+for id, seq in read_fasta():
+  if len(seq) > min_length:
+    write_fasta_entry(id, seq)

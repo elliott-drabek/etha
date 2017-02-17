@@ -1,0 +1,70 @@
+#! /usr/local/packages/Python-2.6.4/bin/python
+
+from sys import *
+from drabek import print_tabbed
+from collections import defaultdict
+
+###############################################################################
+
+asymetrical_similarity_matrix_file, = [open(filename, 'w') for filename in argv[1:]]
+
+###############################################################################
+
+id_id_matches = defaultdict(lambda: [])
+id_length = {}
+for line in stdin:
+  s1, e1, s2, e2, len_1, len_2, pct_idy, len_r, len_q, cov_r, cov_q, id_r, id_q = line[:-1].split('\t')
+
+  s1 = int(s1)
+  e1 = int(e1)
+  s2 = int(s2)
+  e2 = int(e2)
+  len_1 = int(len_1)
+  len_2 = int(len_2)
+  pct_idy = float(pct_idy)
+  len_r = int(len_r)
+  len_q = int(len_q)
+  cov_r = float(cov_r)
+  cov_q = float(cov_q)
+  id_r = intern(id_r)
+  id_q = intern(id_q)
+
+  id_length[id_r] = len_r
+  id_length[id_q] = len_q
+  id_id_matches[id_r, id_q].append((s1 - 1, e1 - 1, pct_idy / 100.0))
+
+id_id_similarity = defaultdict(lambda: 0.0)
+for (id_r, id_q), matches in id_id_matches.iteritems():
+  #if id_r != 'ex21515' or id_q != 'ex21515':
+    #continue
+  #max_idy = 0
+  #print >> stderr, 'id_length[id_r] = %s' % `id_length[id_r]`
+  #for s1, e1, idy in matches:
+    #print >> stderr, 's1, e1, idy = %s' % `s1, e1, idy`
+    #if s1 == 0 and e1 >= id_length[id_r] - 5:
+      #max_idy = max(max_idy, idy)
+  #id_id_similarity[id_r, id_q] = max_idy
+  id_id_similarity[id_r, id_q] = max(idy if s1 == 0 and e1 >= id_length[id_r] - 5 else 0 for s1, e1, idy in matches)
+  #if id_r == id_q:
+    #assert id_id_similarity[id_r, id_q] == 1.0, (id_r, id_q, id_id_similarity[id_r, id_q])
+
+ids = sorted(id_length.keys())
+
+for id in ids:
+  id_id_similarity[id, id] = 1.0
+
+for id_r in ids:
+  for id_q in ids:
+    print >> asymetrical_similarity_matrix_file, '\t'.join(map(str, (id_r, id_q, id_id_similarity[id_r, id_q])))
+
+rows = []
+for id_r in ids:
+  row = []
+  for id_q in ids:
+    distance = 1 - 0.5 * (id_id_similarity[id_r, id_q] + id_id_similarity[id_q, id_r])
+    row.append(distance)
+  rows.append(row)
+
+print '\t'.join([''] + ids)
+for id, row in zip(ids, rows):
+  print '\t'.join([id] + map(str, row))

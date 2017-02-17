@@ -1,0 +1,66 @@
+#! /usr/local/packages/Python-2.6.4/bin/python
+
+from sys import *
+from drabek import print_tabbed, read_fasta, write_fasta_entry
+from collections import defaultdict
+
+###############################################################################
+
+pba_fasta_file, etha_fasta_file = map(open, argv[1:3])
+
+problematic_level_1_file, problematic_level_2_file = [open(filename, 'w') for filename in argv[3:]]
+
+pba_id_seq = dict(read_fasta(pba_fasta_file))
+etha_id_seq = dict(read_fasta(etha_fasta_file))
+
+min_cov_to_consider = 5.0
+min_true_identity = 95.0
+min_idy = 99.0
+
+###############################################################################
+
+pba_matches = defaultdict(lambda: [])
+etha_matches = defaultdict(lambda: [])
+covered_ethas = set()
+covered_pbas = set()
+for line in stdin:
+  s1, e1, s2, e2, len_1, len_2, pct_idy, len_r, len_q, cov_r, cov_q, pba, etha = line[:-1].split('\t')
+
+  len_1 = int(len_1)
+  len_2 = int(len_2)
+  pct_idy = float(pct_idy)
+  length = (len_1 + len_2) / 2
+  cov_r = float(cov_r)
+  cov_q = float(cov_q)
+
+  if pct_idy * cov_r * 0.01 >= min_true_identity:
+    covered_pbas.add(pba)
+  if pct_idy >= min_idy and cov_r >= min_cov_to_consider:
+    pba_matches[pba].append((cov_r, length, etha))
+
+  if pct_idy * cov_q * 0.01 >= min_true_identity:
+    covered_ethas.add(etha)
+  if pct_idy >= min_idy and cov_q >= min_cov_to_consider:
+    etha_matches[etha].append((cov_q, length, pba))
+
+for pba in sorted(pba_id_seq.keys()):
+  matches = pba_matches[pba]
+  if pba in covered_pbas:
+    pass
+  elif not matches:
+    write_fasta_entry(pba, pba_id_seq[pba])
+  else:
+    write_fasta_entry(pba, pba_id_seq[pba], file=problematic_level_1_file)
+
+    level_2_problematic = False
+    for match in sorted(matches):
+      etha = match[-1]
+      if etha not in covered_ethas:
+        level_2_problematic = True
+        break
+
+    if level_2_problematic:
+      write_fasta_entry(pba, pba_id_seq[pba], file=problematic_level_2_file)
+
+for etha in sorted(etha_id_seq.keys()):
+  write_fasta_entry(etha, etha_id_seq[etha])

@@ -1,0 +1,396 @@
+#! /bin/bash
+#$ -S /bin/bash
+#$ -P lsadzewicz-gscid-ch24-eplas
+#$ -cwd
+
+# Script to create var-gene exon1 sequences from Illumina and PacBio reads
+
+###############################################################################
+
+source $SGE_ROOT/igs/common/settings.sh
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o xtrace
+
+###############################################################################
+# command line arguments
+
+etha=$1
+shift
+cd $1
+shift
+lower_kmer_bound=$1
+shift
+upper_kmer_bound=$1
+shift
+
+###############################################################################
+
+export PATH=/home/edrabek/tools/masurca/MaSuRCA-2.0.3.1/jellyfish-2.0.0beta6.1/bin:$PATH
+export PATH=/usr/local/packages/glimmer-3.02/bin:$PATH
+export PYTHONPATH=$etha:${PYTHONPATH:-}
+
+###############################################################################
+# input files
+
+ls 1>&2 asm.seq.fa  #is a fasta file of assembly contigs, degenerates and singletons
+ls 1>&2 71.mer_counts #is jellyfish 71mer count output file
+ls 1>&2 exon1.all.tail.fa #is a fasta file of the tail ends of known exon 1 sequences
+
+###############################################################################
+
+temp_d=`mktemp -d`
+
+function rm_temp_d {
+  rm -rf $temp_d
+}
+
+trap rm_temp_d 0
+
+###############################################################################
+
+# Nucmer reference exon1 tail sequences against assembly
+nucmer --maxmatch -p nuc-ex1-v-asm exon1.all.tail.fa asm.seq.fa
+delta-filter -q nuc-ex1-v-asm.delta > nuc-ex1-v-asm.delta.q
+
+# Note:  Should add new exon1 sequences found in other strains to the set
+#   of reference exon1 sequences
+
+# Get regions from start of match to 100bp past inferred end of exon1,
+# combining overlapping regions
+show-coords -cHlT nuc-ex1-v-asm.delta.q \
+  | gawk '{hang=$8-$2;if($3<$4){a=$3;b=$4+hang+100;if($9<b)b=$9;d="f"}else{b=$3;a=$4-hang-100;if(a<1)a=1;d="r"}printf"%s %7d %7d  %s\n",$13,a,b,d}' \
+  | sort -k1,1 -k2n -k3nr | $etha/union-regions-tail.awk > ex1.prelim.matches
+
+# Extract sequence corresponding to regions
+gawk '{if($4=="f"){a=$2;b=$3}else{a=$3;b=$2}printf"pex1-%04d %s %7d %7d\n",++c,$1,a,b}' ex1.prelim.matches | multi-extract -w asm.seq.fa - > ex1.prelim.fa
+
+# Use kmer counts from all the reads to repair these sequences
+# Assume kmers already have been counted
+# This and all steps below use only kmers occurring $lower_kmer_bound or more times
+jellyfish dump -c -L $lower_kmer_bound -U $upper_kmer_bound 71.mer_counts \
+  | $etha/kmer-repair -x 300 -g 200 ex1.prelim.fa - \
+  | tee >(gzip -v > kmer-repair.log.gz) \
+  | gawk '/^>/{s=1}{if(NF==0)s=0;if(s)print}' > ex1.prelim.repair.fa
+
+# Re-do NUCmer of reference exon1 sequences against repaired sequences
+nucmer --maxmatch -p nuc-ex1-v-repaired exon1.all.tail.fa ex1.prelim.repair.fa
+delta-filter -q nuc-ex1-v-repaired.delta > nuc-ex1-v-repaired.delta.q
+
+# Find potential end points of exon1 matches
+show-coords -cHlT nuc-ex1-v-repaired.delta.q \
+  | gawk '{hang=$8-$2;if($3<$4){a=$4+hang;d="f"}else{a=$4-hang;d="r"}printf"%s %7d  %s %7d %5d\n",$13,a,d,$9,hang}' \
+  | sort -k1,1b -k3,3b -k2nb | $etha/exon-ends.awk > ex1.ends
+
+# Get 100bp sequence at ends of exon1 matches.  Go 3bp past end position
+gawk '{if($3=="f"){b=$2+3;a=b-99}else{b=$2-3;a=b+99}if($5<=100)printf"ex1end%02d  %s %7d %7d\n",++c,$1,a,b}' \
+  ex1.ends | multi-extract -w ex1.prelim.repair.fa - > ex1.ends.fa
+
+# Get 71mers at exon1 ends to start backward walks.  Take last AAGGT and preceding 66bp
+$etha/exon1-end-mer.awk ex1.ends.fa | gawk '{if(seen[$2]==0){print;seen[$2]=1}}' \
+  > prelim.walk-left.starts
+
+# Also get all 71mers that end in aaggt plus reverse-complement of 71mers
+# that start with acctt.  For strain 318 this found two kmers that otherwise
+# seemed to be missed.
+
+gawk '{print $2}' prelim.walk-left.starts | cat - $etha/ref.ex1-splice.71mer | sort -u \
+  | gawk '{printf">ex%05d\n%s\n",++c,$1}' > ex1.comb-71mer.fa
+jellyfish dump -c -L $lower_kmer_bound -U $upper_kmer_bound 71.mer_counts \
+  | gawk '{if(substr($1,67)=="AAGGT")print}' > end-aaggt.71mers
+jellyfish dump -c -L $lower_kmer_bound -U $upper_kmer_bound 71.mer_counts \
+  | gawk '{if(substr($1,1,5)=="ACCTT")print}' > begin-acctt.71mers
+gawk '{printf">%05d\n%s\n",++c,$1}' end-aaggt.71mers > end-aaggt.fa
+gawk '{printf">c%06d\n%s\n",++c,$1}' begin-acctt.71mers | $etha/rev-comp.awk > tmp.fa
+cat end-aaggt.fa tmp.fa > prelim-ex1-splice-71mer.fa
+nucmer --maxmatch -p nuc-ex1comb-v-prelimex1spl -l 15 -c 25 \
+  ex1.comb-71mer.fa prelim-ex1-splice-71mer.fa
+delta-filter -q nuc-ex1comb-v-prelimex1spl.delta > nuc-ex1comb-v-prelimex1spl.delta.q
+show-coords -cHlT nuc-ex1comb-v-prelimex1spl.delta.q | gawk '{if($2==71)print $13}' \
+  | $etha/extract-fasta-bytag.awk - prelim-ex1-splice-71mer.fa \
+  | gawk '/^>/{Pr();next}{s=s $1}END{Pr()}function Pr(){if(s!="")print s;s=""}' \
+  | sort -u > prelim.71mers
+
+# Combine prelim.walk-left.starts and prelim.71mers to make ex1.walk-left.starts
+gawk '{printf"p%04d  %s  L\n",++c,$1}' prelim.71mers \
+  | cat prelim.walk-left.starts - | gawk '{if(seen[$2]==0){print;seen[$2]=1}}' \
+  > ex1.walk-left.starts
+
+# Walk left from exon1 ends to find exon1 starts.
+jellyfish dump -c -L $lower_kmer_bound -U $upper_kmer_bound 71.mer_counts \
+  | $etha/multi-walk -n 12000 ex1.walk-left.starts - > ex1.walk-left.out
+
+# From left walks get 71mers that are likely starts of exon1's
+gawk '/^>/{s=($2=="Orf-end")}{if(NF==0)s=0;if(s)print}' ex1.walk-left.out > ex1.walk-left.fa
+$etha/exon1-start-mer.awk ex1.walk-left.fa > ex1.walk-right.starts
+
+# Make stop sequences for walk right so the walks don't go past the known exon1
+# splice sites
+gawk '{print $2}' ex1.walk-left.starts | sort -u > ex1.walk-right.stops
+
+# Walk back right from exon1 starts
+jellyfish dump -c -L $lower_kmer_bound -U $upper_kmer_bound 71.mer_counts \
+  | $etha/multi-walk -n 12000 -s ex1.walk-right.stops ex1.walk-right.starts - > ex1.walk-right.out
+
+# Get new 71mers at ends of right walks that are likely splice sites
+# This should be improved to do something more accurate than just find the last AAGGT pattern
+gawk '/^>/{s=($2=="Orf-end")}{if(NF==0)s=0;if(s)print}' ex1.walk-right.out \
+  > ex1.walk-right.fa
+$etha/exon1-end-mer.awk ex1.walk-right.fa | gawk '{if(seen[$2]==0){print;seen[$2]=1}}' > ex1.new.walk-left.starts
+
+# Combine the original and new walk-left start 71mers
+cat ex1.walk-left.starts ex1.new.walk-left.starts > ex1.walk-left-2.starts
+
+# Make stop sequences for final walk-left
+gawk '{print $2}' ex1.walk-right.starts | sort -u > ex1.walk-left.stops
+
+# Do the final walk left and save all 71mers used
+jellyfish dump -c -L $lower_kmer_bound -U $upper_kmer_bound 71.mer_counts \
+  | $etha/multi-walk -n 12000 -s ex1.walk-left.stops -u ex1.71mers ex1.walk-left-2.starts - \
+  > ex1.walk-left-2.out
+
+# Create all possible exon1 sequences of left walks
+$etha/multi-walk -n 12000 -C -x 1000 -s ex1.walk-left.stops ex1.walk-left-2.starts ex1.71mers \
+    | gawk '/^>/{s=1}{if(NF==0)s=0;if(s)print}' > ex1.possible.fa
+
+# Remove sequences shorter than 1Kb; I think all exon1's are at least this long
+$etha/fastalen.awk ex1.possible.fa | gawk '{if(999<$2)print $1}' \
+    | $etha/extract-fasta-bytag.awk - ex1.possible.fa > ex1.cand.fa
+
+# NUCmer candidate exon1 sequences against PacBio reads
+# Uses min-exact-match length option -l 70 to speed up; used to use 30
+# 70 might be too high
+# Changed pb-reads.fa to match the original link where pb-reads.fa pointed
+# to the same file as asm.seq.fa
+nucmer --maxmatch -l 70 -p nuc-ex1cand-v-pbreads ex1.cand.fa asm.seq.fa
+delta-filter -q nuc-ex1cand-v-pbreads.delta > nuc-ex1cand-v-pbreads.delta.q
+
+# Extract matched part of ex1.cand sequences as a corrected version of pb reads
+# This uses matches at least 500bp long and >=95% identity
+show-coords -cHlT nuc-ex1cand-v-pbreads.delta.q | gawk '{if(499<$6&&95.0<=$7)printf"s%05d  %s %7d %7d\n",++c,$12,$1,$2}' > ex1.pbmatch.coords
+multi-extract -w ex1.cand.fa ex1.pbmatch.coords > ex1.pbmatch.fa
+
+# Now assemble ex1.pbmatch sequences
+# Might try something like minimus.  Below uses a simple unitigger I wrote
+# that uses exact overlaps from NUCmer
+nucmer --maxmatch -l 100 -p nuc-ex1pbmatch-self ex1.pbmatch.fa ex1.pbmatch.fa
+show-coords -cHlT nuc-ex1pbmatch-self.delta | gawk '{if($7==100.0)print}' \
+    | sort -k8n -k12,12 -k1n -k2nr | $etha/unitig > ex1.pbmatch.unitigs
+$etha/make-unitig-seq.awk ex1.pbmatch.fa ex1.pbmatch.unitigs > ex1.pbmatch.uni.fa
+
+###############################################################################
+# Find exon1's formed by a unique path from the starting kmer and
+# add them to the final set of exon1 sequences if not already present.
+# If they properly contain any exon1 unitigs, remove those properly
+# contained unitigs.
+
+echo 1>&2 "\n# Get unique-path candidate sequences"
+$etha/get-uniq-path-seqs.awk ex1.cand.fa > ex1-uniq-path.fa
+
+echo 1>&2 "\n# Match them to the unitigs"
+nucmer --maxmatch -p nuc-uniq-path ex1-uniq-path.fa ex1.pbmatch.uni.fa
+rm -f nuc-uniq-path.cluster
+
+echo 1>&2 "\n# Get exact and contained matches"
+show-coords -cHlT nuc-uniq-path.delta | $etha/get-contained-matches.awk \
+  | sort -b -k1,1 -k2,2r > ex1-uniq-path.uni-matches
+
+echo 1>&2 "\n# Find which unitigs to remove (if properly contained in a unique path)"
+echo 1>&2 "# and which unique paths to remove (if equal a unitig)."
+gawk '{if($2=="contains")print $3}' ex1-uniq-path.uni-matches > ex1.uni.to-remove
+gawk '{if($2=="equals")print $1}' ex1-uniq-path.uni-matches > ex1-uniq-path.to-remove
+
+echo 1>&2 "\n# Create final exon1 sequences"
+$etha/extract-fasta-bytag-rev.awk ex1.uni.to-remove ex1.pbmatch.uni.fa > ex1.final.fa
+$etha/extract-fasta-bytag-rev.awk ex1-uniq-path.to-remove ex1-uniq-path.fa \
+  >> ex1.final.fa
+
+###############################################################################
+# Summary
+
+gawk '{print substr($1,1,10)}' ex1.walk-left.stops | sort -u > exon1.10mer.starts
+gawk '{print substr($2,57)}' ex1.walk-left-2.starts | sort -u > exon1.15mer.ends
+$etha/uni-classify.awk exon1.10mer.starts exon1.15mer.ends ex1.final.fa \
+    > ex1.final.classif
+
+rm -f ex1.final.summary
+echo "Complete exons" >> ex1.final.summary
+gawk '{if($3=="start"&&$4=="end")print $2}' ex1.final.classif | sort -nr \
+    | $etha/n50.awk | tail -1 | gawk '{printf"  %s\n",substr($0,6)}' >> ex1.final.summary || true
+echo "Start fragments" >> ex1.final.summary
+gawk '{if($3=="start"&&$4=="-")print $2}' ex1.final.classif | sort -nr \
+    | $etha/n50.awk | tail -1 | gawk '{printf"  %s\n",substr($0,6)}' >> ex1.final.summary || true
+echo "End fragments" >> ex1.final.summary
+gawk '{if($3=="-"&&$4=="end")print $2}' ex1.final.classif | sort -nr \
+    | $etha/n50.awk | tail -1 | gawk '{printf"  %s\n",substr($0,6)}' >> ex1.final.summary || true
+echo "Internal fragments" >> ex1.final.summary
+gawk '{if($3=="-"&&$4=="-")print $2}' ex1.final.classif | sort -nr \
+    | $etha/n50.awk | tail -1 | gawk '{printf"  %s\n",substr($0,6)}' >> ex1.final.summary || true
+echo "" >> ex1.final.summary
+
+###############################################################################
+# Compress intermediate files
+
+gzip -v * || true
+gunzip -v ex1.final.fa.gz
+gunzip -v ex1.final.summary.gz
+
+###############################################################################
+
+echo 1>&2 Done with ETHA proper
+
+##############################################################################
+
+k=71
+
+rm -rf finish
+mkdir -p finish
+cd finish
+
+#------------------------------------------------------------------------------
+# Excise sections aligning to reference
+
+tag=assembly_vs_reference
+f=$tag.delta.gz
+if [[ ! -e $f ]]; then
+  echo 1>&2 f=$f
+
+  promer --maxmatch -p $tag ../reference.fa ../asm.seq.fa
+  gzip -v assembly_vs_reference.{cluster,delta}
+fi
+
+f=exon1_ref_alignments.grouped.contig-start-stop
+if [[ ! -e $f ]]; then
+  echo 1>&2 f=$f
+
+  show-coords -cHlT <(zcat assembly_vs_reference.delta.gz ) \
+    | $etha/promer_coords_to_nucmer_coords \
+    | $etha/group_matches \
+    > $f
+fi
+
+f=exon1_ref_alignments.grouped.fa
+if [[ ! -e $f ]]; then
+  echo 1>&2 f=$f
+
+  < exon1_ref_alignments.grouped.contig-start-stop $etha/cut_sections -b 0 ../asm.seq.fa \
+    > $f
+fi
+
+f=exon1_ref_alignments.grouped.best_frame.only_clean_ORFs.fa
+if [[ ! -e $f ]]; then
+  echo 1>&2 f=$f
+  < exon1_ref_alignments.grouped.fa $etha/count_stop_codons.fancy 1 \
+    > $f
+fi
+
+#------------------------------------------------------------------------------
+# Repair
+
+f=exon1_ref_alignments.grouped.best_frame.only_clean_ORFs.repaired.fa
+if [[ ! -e $f ]]; then
+  echo 1>&2 f=$f
+  jellyfish dump -c -L $lower_kmer_bound -U $upper_kmer_bound ../${k}.mer_counts \
+    | $etha/kmer-repair -x 300 -g 200 exon1_ref_alignments.grouped.best_frame.only_clean_ORFs.fa - \
+    | tee kmer-repair.log \
+    | gawk '/^>/{s=1}{if(NF==0)s=0;if(s)print}' \
+    > $f
+fi
+
+#------------------------------------------------------------------------------
+# Deduplicate
+
+tag=blobs_vs_blobs
+f=$tag.delta
+if [[ ! -e $f ]]; then
+  echo 1>&2 f=$f
+
+  nucmer --maxmatch -p $tag exon1_ref_alignments.grouped.best_frame.only_clean_ORFs.repaired.fa exon1_ref_alignments.grouped.best_frame.only_clean_ORFs.repaired.fa
+fi
+
+f=exon1_ref_alignments.grouped.best_frame.only_clean_ORFs.repaired.deduplicated.fa
+if [[ ! -e $f ]]; then
+  < exon1_ref_alignments.grouped.best_frame.only_clean_ORFs.repaired.fa $etha/extract-fasta-bytag.awk <(show-coords -cHlT $tag.delta | $etha/remove_inclusions.composite 95) \
+    > $f
+fi
+blobs_f=$f
+
+#------------------------------------------------------------------------------
+# Deduplicate pipeline outputs
+
+results_d=..
+
+tag=results_vs_results
+f=$tag.delta
+if [[ ! -e $f ]]; then
+  echo 1>&2 f=$f
+
+  nucmer --maxmatch -p $tag $results_d/ex1.final.fa $results_d/ex1.final.fa
+fi
+
+f=results.deduplicated.fa
+if [[ ! -e $f ]]; then
+  echo 1>&2 f=$f
+
+  < $results_d/ex1.final.fa $etha/extract-fasta-bytag.awk <(show-coords -cHlT $tag.delta | $etha/remove_inclusions.composite 95) \
+    > $f
+fi
+results_f=$f
+
+#------------------------------------------------------------------------------
+# Take union
+
+tag=results_vs_blobs
+f=$tag.delta
+if [[ ! -e $f ]]; then
+  echo 1>&2 f=$f
+
+  nucmer --maxmatch -p $tag $blobs_f $results_f
+fi
+
+f=union.fa
+if [[ ! -e $f ]]; then
+  echo 1>&2 f=$f
+
+  show-coords -cHlT $tag.delta \
+    | $etha/unify_blobs_and_results.composite $blobs_f $results_f problematic_blobs.{1,2}.fa \
+    > $f
+
+  #| process_matches $blobs_f $results_f
+fi
+
+
+#------------------------------------------------------------------------------
+# look at problematic
+
+for level in 1 2; do
+  tag=results_vs_problematic.$level
+  f=$tag.delta
+  if [[ ! -e $f ]]; then
+    echo 1>&2 f=$f
+
+    nucmer --maxmatch -p $tag problematic_blobs.$level.fa $results_f
+  fi
+
+  f=$tag.filtered.delta
+  if [[ ! -e $f ]]; then
+    echo 1>&2 f=$f
+
+    delta-filter -i 99 $tag.delta \
+      > $f
+  fi
+
+  f=problematic.$level.png
+  if [[ ! -e $f ]]; then
+    echo 1>&2 f=$f
+
+    show-coords -cHlT $tag.filtered.delta \
+      | awk '{print $13 "\t" $9 "\t+"}' \
+      | sort -u \
+      > $temp_d/qfile
+
+    mummerplot --png -p problematic.$level -l -R problematic_blobs.$level.fa -Q $temp_d/qfile $tag.filtered.delta
+  fi
+done

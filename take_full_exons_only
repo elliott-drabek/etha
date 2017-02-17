@@ -1,0 +1,16 @@
+#! /usr/local/packages/Python-2.6.4/bin/python
+
+from sys import *
+from drabek import read_fasta, write_fasta_entry
+
+###############################################################################
+
+min_length, = map(int, argv[1:])
+
+###############################################################################
+
+for id, seq in read_fasta():
+  seq = seq.upper()
+
+  if len(seq) >= min_length and seq.startswith('AGAA') and (len(seq) % 3 == 2) and (seq[-3:] in ('TAA', 'TAG', 'TGA')):
+    write_fasta_entry(id, seq, max_line_length=60)

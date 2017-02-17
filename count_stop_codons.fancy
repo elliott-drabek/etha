@@ -1,0 +1,45 @@
+#! /usr/local/packages/Python-2.6.4/bin/python
+
+from sys import *
+from drabek import print_tabbed, read_fasta_fancy, write_fasta_entry, get_reverse_complement
+from collections import defaultdict
+import random
+
+###############################################################################
+
+max_stop_fraction, = map(float, argv[1:])
+
+###############################################################################
+
+stop_codons = 'TAG TAA TGA'.split()
+
+def get_orientations(seq):
+  yield '+', seq
+  yield '-', get_reverse_complement(seq)
+
+def get_score(seq):
+  memo = []
+  for position in range(len(seq) + 1):
+    if position < 3:
+      score = position
+    else:
+      score_1 = 1 + memo[position - 1]
+      score_2 = 2 + memo[position - 2]
+      score_3 = (3 if seq[position - 3:position] in stop_codons else 0) + memo[position - 3]
+      score = min(score_1, score_2, score_3)
+    memo.append(score)
+  return score
+
+for id, rest_of_head_line, orig_seq in read_fasta_fancy():
+  #orig_seq = [orig_seq[i] for i in range(len(orig_seq))]
+  #random.shuffle(orig_seq)
+  #orig_seq = ''.join(orig_seq)
+  best_orientation = best_seq = best_score = None
+  for orientation, seq in get_orientations(orig_seq):
+    score = get_score(seq)
+    if best_score is None or best_score > score:
+      best_orientation, best_seq, best_score = orientation, seq, score
+
+  best_stop_fraction = best_score / float(len(best_seq))
+  #if best_stop_fraction <= max_stop_fraction:
+  write_fasta_entry('%s %s orientation=%s score=%s stop_fraction=%s' % (id, rest_of_head_line, best_orientation, best_score, best_stop_fraction), best_seq)

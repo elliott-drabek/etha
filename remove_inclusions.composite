@@ -1,0 +1,51 @@
+#! /usr/local/packages/Python-2.6.4/bin/python
+
+from sys import *
+from drabek import print_tabbed
+from collections import defaultdict
+
+###############################################################################
+
+min_true_identity, = map(float, argv[1:])
+
+###############################################################################
+
+inclusions = set()
+all_nodes = set()
+for line in stdin:
+  ref_start, ref_end, qry_start, qry_end, len_ref_match, len_qry_match, pct_idy, len_ref, len_qry, cov_r, cov_q, ref, qry = line[:-1].split('\t')
+
+  pct_idy = float(pct_idy)
+  cov_q = float(cov_q)
+
+  if pct_idy * cov_q * 0.01 >= min_true_identity:
+    inclusions.add((qry, ref))
+
+  all_nodes.add(ref)
+  all_nodes.add(qry)
+
+transitive_closure = set()
+for node in all_nodes:
+  transitive_closure.add((node, node))
+for a, b in inclusions:
+  transitive_closure.add((a, b))
+for k in all_nodes:
+  for i in all_nodes:
+    for j in all_nodes:
+      if (i, k) in transitive_closure and (k, j) in transitive_closure:
+        transitive_closure.add((i, j))
+
+assert transitive_closure.issuperset(inclusions)
+#if transitive_closure != inclusions:
+  #print >> stderr, 'In transitive closure but not direct:'
+  #print >> stderr, '\n'.join(['%s\t%s' % pair for pair in transitive_closure - inclusions])
+
+retained = set(all_nodes)
+for a, b in transitive_closure:
+  if a == b:
+    continue
+  if a in retained and b in retained:
+    retained.remove(a)
+
+print '\n'.join(retained)
+#print '\n'.join(['%s\t%s' % (node, node in retained) for node in all_nodes])

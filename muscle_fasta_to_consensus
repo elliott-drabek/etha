@@ -1,0 +1,23 @@
+#! /usr/local/packages/Python-2.6.4/bin/python
+
+from sys import *
+from drabek import print_tabbed, read_fasta, key_max_random_tie, write_fasta_entry
+from collections import defaultdict
+
+###############################################################################
+
+id_seq = dict((id, seq) for id, seq in read_fasta())
+
+seq_length, = set(len(seq) for seq in id_seq.values())
+#print >> stderr, 'seq_length = %s' % `seq_length`
+
+result = []
+for bases in zip(*id_seq.values()):
+  base_count = defaultdict(lambda: 0)
+  for base in bases:
+    base_count[base] += 1
+  consensus_base = key_max_random_tie(base_count)
+  if consensus_base != '-':
+    result.append(consensus_base)
+
+write_fasta_entry('consensus', ''.join(result))

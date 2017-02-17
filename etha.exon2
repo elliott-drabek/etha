@@ -1,0 +1,150 @@
+#! /bin/bash
+
+# Find and evaluate var-gene exon 2 sequences in a PacBio reads or contigs
+
+# Dependencies (in PATH):
+# * mummer
+# * jellyfish version 1.1 or later
+# * glimmer3 (actuallly just multi-extract)
+
+# Installation: set the environment variable $etha to the absolute path of the directory this script is in.
+
+# Running: Set up input directory (see below) and execute 'etha /path/to/input/directory'
+
+###############################################################################
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o xtrace
+
+export LC_ALL=C
+export PATH=$etha:$PATH
+
+###############################################################################
+
+temp_d=`mktemp -d`
+
+function rm_temp_d {
+  rm -rf $temp_d
+}
+
+trap rm_temp_d 0
+
+###############################################################################
+
+cd $1
+shift
+
+# This directory should contain a subdirectory 'input' with the following files:
+# * target_exon.fa: multi-fasta of all reference target exons
+# * seq1.fa: Sequence to use to jumpstart kmer subgraph construction
+# * correctable.fa: Sequence to correct
+
+###############################################################################
+
+export PATH=/home/edrabek/tools/masurca/MaSuRCA-2.0.3.1/jellyfish-2.0.0beta6.1/bin:$PATH
+
+# restrict seq1.fa and correctable.fa to sequences longer than 71
+for prefix in seq1 correctable; do
+  < input/$prefix.fa extract-long-seqs 71 \
+    > $prefix.long.fa
+done
+
+# NUCmer reference exon2 sequences against asm
+nucmer --maxmatch -p nuc-refex2-v-asm input/target_exon.fa seq1.long.fa
+delta-filter -q nuc-refex2-v-asm.delta > nuc-refex2-v-asm.delta.q
+
+# Find potential start points of exon2 matches
+show-coords -cHlT nuc-refex2-v-asm.delta.q \
+  | gawk '{hang=$1-1;if($3<$4){a=$3-hang;d="f"}else{a=$3+hang;d="r"}printf"%s %7d  %s %7d %5d\n",$13,a,d,$9,hang}' \
+  | sort -k1,1b -k3,3b -k2nb \
+  | exon-starts.awk \
+  > asm.ex2.starts
+
+# Get sequences starting 5bp before the exon2 start position and extending for up
+# to 1500bp
+gawk '{if($3=="f"){a=$2-5;b=a+1499;if($4<b)b=$4}else{a=$2+5;b=a-1499;if(b<1)b=1}if($5<=50)printf"ex2%04d  %s %7d %7d\n",++c,$1,a,b}' \
+  asm.ex2.starts \
+  | multi-extract -w seq1.long.fa - \
+  > ex2.raw.fa
+
+# Get 71mers at exon2 starts to start forward walks.  Take first AGAA
+get-exon2.awk ex2.raw.fa \
+  | gawk '/^>/{Pr();t=substr($1,2);next}{s=s $0}END{Pr()}function Pr(){if(s!="")printf"%-10s  %s  R\n",t,substr(s,1,71);s=""}' \
+  | gawk 'length($2) == 71' \
+  | sort -k2,2b -u \
+  > ex2.fwd-01.starts
+
+# Walk right from exon2 starts to ends of orfs or 1500bp, whichever comes first
+jellyfish dump -c -L 10 71.mer_counts \
+  | multi-walk -n 1500 ex2.fwd-01.starts - \
+  > ex2.fwd-01.out
+
+# Get orf-end sequences from ends of fwd walks to use as starts of rev walks
+gawk '/^>/{s=($2=="Orf-end")}{if(NF==0)s=0;if(s)print}' ex2.fwd-01.out \
+  > ex2.fwd-01.fa
+gawk '/^>/{Pr();t=substr($1,2);next}{s=s $0}END{Pr()}function Pr(){n=length(s);if(599<n)printf"%-12s  %s  L\n",t,substr(s,n-70);s=""}' \
+  ex2.fwd-01.fa \
+  > ex2.rev-01.starts
+
+# Get short start patterns of ex2's to stop rev walks
+gawk '{print substr($2,1,10)}' ex2.fwd-01.starts \
+  | sort -u \
+  > ex2.start.patterns
+
+# Walk left from exon2 ends
+jellyfish dump -c -L 10 71.mer_counts \
+  | multi-walk -n 1500 -s ex2.start.patterns ex2.rev-01.starts - \
+  > ex2.rev-01.out
+
+# Get 71mers at ends of left walks to use as starts of fwd-02 walks
+gawk '/^>/{s=($2=="Orf-end"||$2=="Hit-stop-pattern")}{if(NF==0)s=0;if(s)print}' ex2.rev-01.out \
+  > ex2.rev-01.fa
+get-exon2.awk ex2.rev-01.fa \
+ | gawk '/^>/{Pr();t=substr($1,2);next}{s=s $0}END{Pr()}function Pr(){n=length(s);if(599<n)printf"%-12s  %s  R\n",t,substr(s,1,71);s=""}' \
+ | sort -k2,2b -u \
+ > ex2.fwd-02.starts
+
+# Re-do forward walks and save kmers used.  Could iterate fwd-rev more times
+# if desired.
+jellyfish dump -c -L 10 71.mer_counts \
+  | multi-walk -n 1500 -u ex2.71mers ex2.fwd-02.starts - \
+  > ex2.fwd-02.out
+
+# NUCmer reference exon2 sequences against PacBio reads
+nucmer --maxmatch -p nuc-ex2-v-pb input/target_exon.fa correctable.long.fa
+delta-filter -q nuc-ex2-v-pb.delta \
+  > nuc-ex2-v-pb.delta.q
+
+# Find potential start points of exon2 matches
+show-coords -cHlT nuc-ex2-v-pb.delta.q \
+  | gawk '{hang=$1-1;if($3<$4){a=$3-hang;d="f"}else{a=$3+hang;d="r"}printf"%s %7d  %s %7d %5d\n",$13,a,d,$9,hang}' \
+  | sort -k1,1b -k3,3b -k2nb \
+  | exon-starts.awk \
+  > pb.ex2.starts
+
+# Get sequences starting 5bp before the exon2 start position and extending for up
+# to 1500bp
+gawk '{if($3=="f"){a=$2-5;b=a+1499;if($4<b)b=$4}else{a=$2+5;b=a-1499;if(b<1)b=1}if($5<=50)printf"ex2%04d  %s %7d %7d\n",++c,$1,a,b}' \
+  pb.ex2.starts \
+  | multi-extract -w correctable.long.fa - \
+  | extract-long-seqs 71 \
+  > pb.ex2.raw.fa
+
+# Use exon2 71mers to repair unconfirmed regions in ex2.raw.fa where possible
+kmer-repair -V 1 pb.ex2.raw.fa ex2.71mers \
+  | gawk '/^>/{s=1}{if(NF==0)s=0;if(s)print}' \
+  > pb.ex2.repair.fa
+
+# Get likely exon2 portion of repaired sequence.  From first AGAA until end of
+# reading frame (or run off the end of the sequence).
+get-exon2.awk pb.ex2.repair.fa \
+  > pb.ex2.all.fa
+
+# Get subset of these sequences that have all kmers confirmed as exon2 kmers
+multi-trace pb.ex2.all.fa ex2.71mers \
+  | gawk '/^>/{t=substr($1,2);c=z=0;next}{if(NF==0&&t!="")printf"%s %4d %4d\n",t,z,c;else if($1==++c){if($3==0)z++}}END{print t,z,c}' \
+  | gawk '{if($2==0)print $1}' \
+  | extract-fasta-bytag.awk - pb.ex2.all.fa \
+  > pb.ex2.cnf.fa
