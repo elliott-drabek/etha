@@ -1,4 +1,4 @@
-#! /usr/local/packages/Python-2.6.4/bin/python
+#!/usr/bin/env python3
 
 from sys import *
 from drabek import print_tabbed
@@ -34,7 +34,7 @@ for line in stdin:
       qry_start, qry_end = qry_end, qry_start
     qry_matches[qry].append((qry_start, qry_end, line[:-1]))
 
-for qry, matches in qry_matches.iteritems():
+for qry, matches in qry_matches.items():
   matches.sort()
 
   groups = []

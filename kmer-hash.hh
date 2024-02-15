@@ -441,7 +441,7 @@ template <class DT> void  Kmer_Hash_t <DT> :: Insert
 {
   __uint128_t  suff;
   unsigned  pref;
-
+  printf("*****Printing strlen %d and kmer length %d",strlen(kmer), kmer_len);
   assert (int (strlen (kmer)) == kmer_len);
   Kmer_To_Binary (kmer, pref, suff);
 

@@ -236,6 +236,9 @@ echo "" >> ex1.final.summary
 gzip -v * || true
 gunzip -v ex1.final.fa.gz
 gunzip -v ex1.final.summary.gz
+gunzip -v asm.seq.fa.gz
+gunzip -v exon1.all.tail.fa.gz
+gunzip -v reference.fa.gz
 
 ###############################################################################
 
@@ -258,7 +261,7 @@ if [[ ! -e $f ]]; then
   echo 1>&2 f=$f
 
   promer --maxmatch -p $tag ../reference.fa ../asm.seq.fa
-  gzip -v assembly_vs_reference.{cluster,delta}
+  gzip -v assembly_vs_reference.delta
 fi
 
 f=exon1_ref_alignments.grouped.contig-start-stop
@@ -288,6 +291,7 @@ fi
 
 #------------------------------------------------------------------------------
 # Repair
+gunzip -v ../${k}.mer_counts
 
 f=exon1_ref_alignments.grouped.best_frame.only_clean_ORFs.repaired.fa
 if [[ ! -e $f ]]; then
