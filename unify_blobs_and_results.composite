@@ -1,4 +1,4 @@
-#! /usr/local/packages/Python-2.6.4/bin/python
+#!/usr/bin/env python3
 
 from sys import *
 from drabek import print_tabbed, read_fasta, write_fasta_entry

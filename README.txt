@@ -12,10 +12,11 @@ Running the pipeline consists of three steps:
 
 1) Running Jellyfish on the Illumina reads to get counts of all observed 71mers. See the Jellyfish documentation for instructions for this step.
 
-2) Setting up the working directory with three inputs files. These should be copied or symlinked to these exact names:
+2) Setting up the working directory with four input files. These should be copied or symlinked to these exact names:
 ** asm.seq.fa, the whole genome assembly
 ** 71.mer_counts, the output of step 1
 ** exon1.all.tail.fa, which lists the tail ends of known exon 1 sequences. A version is included with this code. Augmenting the included version with sequences likely to be similar to those of the target strain may improve sensitivity
+**reference.fa, which lists previously known exon1 sequences
 
 3) Running the main driver script:
 

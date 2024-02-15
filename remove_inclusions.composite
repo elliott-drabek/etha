@@ -1,4 +1,4 @@
-#! /usr/local/packages/Python-2.6.4/bin/python
+#!/usr/bin/env python3
 
 from sys import *
 from drabek import print_tabbed
@@ -47,5 +47,5 @@ for a, b in transitive_closure:
   if a in retained and b in retained:
     retained.remove(a)
 
-print '\n'.join(retained)
+print('\n'.join(retained))
 #print '\n'.join(['%s\t%s' % (node, node in retained) for node in all_nodes])

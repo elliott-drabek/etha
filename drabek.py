@@ -301,10 +301,10 @@ def read_fasta_agnostic(file=sys.stdin):
   yield id, ''.join(sequence_parts)
 
 def write_fasta_entry(label, sequence, file=sys.stdout, max_line_length=60):
-  print >> file, '>' + label
+  print('>' + label, file=file)
   position = 0
   while position < len(sequence):
-    print >> file, sequence[position:position + max_line_length]
+    print(sequence[position:position + max_line_length], file=file)
     position += max_line_length
 
 ################################################################################
@@ -330,7 +330,7 @@ def median(xs):
 ################################################################################
 
 def print_tabbed(*fields):
-  print '\t'.join(map(str, fields))
+  print('\t'.join(map(str, fields)))
 
 ################################################################################
 

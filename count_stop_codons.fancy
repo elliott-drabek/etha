@@ -1,4 +1,4 @@
-#! /usr/local/packages/Python-2.6.4/bin/python
+#!/usr/bin/env python3
 
 from sys import *
 from drabek import print_tabbed, read_fasta_fancy, write_fasta_entry, get_reverse_complement
@@ -38,8 +38,8 @@ for id, rest_of_head_line, orig_seq in read_fasta_fancy():
   for orientation, seq in get_orientations(orig_seq):
     score = get_score(seq)
     if best_score is None or best_score > score:
-      best_orientation, best_seq, best_score = orientation, seq, score
-
+        best_orientation, best_seq, best_score = orientation, seq, score
+  
   best_stop_fraction = best_score / float(len(best_seq))
   #if best_stop_fraction <= max_stop_fraction:
   write_fasta_entry('%s %s orientation=%s score=%s stop_fraction=%s' % (id, rest_of_head_line, best_orientation, best_score, best_stop_fraction), best_seq)
